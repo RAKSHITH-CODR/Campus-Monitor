@@ -28,8 +28,8 @@ Provide a JSON response with:
 Be concise and practical.
     `;
 
-    const message = await groq.messages.create({
-      model: 'mixtral-8x7b-32768',
+    const completion = await groq.chat.completions.create({
+      model: 'llama3-8b-8192',
       max_tokens: 300,
       messages: [
         {
@@ -39,7 +39,7 @@ Be concise and practical.
       ],
     });
 
-    const responseText = message.content[0].text;
+    const responseText = completion.choices[0].message.content;
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
     const analysis = JSON.parse(jsonMatch ? jsonMatch[0] : responseText);
 

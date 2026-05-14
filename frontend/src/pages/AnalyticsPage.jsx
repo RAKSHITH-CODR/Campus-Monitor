@@ -20,6 +20,7 @@ import {
 import { TrendingUp, Zap, Droplets, Wind, Activity, Calendar, Download } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { THEME_COLORS } from '../config/theme';
+import ReportExport from '../components/ReportExport';
 
 export default function AnalyticsPage() {
   const { theme } = useStore();
@@ -121,18 +122,10 @@ export default function AnalyticsPage() {
             {range}
           </motion.button>
         ))}
-        <motion.button
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          className="ml-auto px-4 py-2 rounded-lg font-medium transition-all flex items-center gap-2"
-          style={{
-            backgroundColor: colors.bg.secondary,
-            color: colors.text.secondary,
-          }}
-        >
-          <Download className="w-4 h-4" />
-          Export
-        </motion.button>
+        <ReportExport 
+          sensorData={{}} 
+          alerts={[]}
+        />
       </motion.div>
 
       {/* Hourly Trends */}

@@ -7,15 +7,16 @@ const analyzeData = async (req, res, next) => {
     const { room } = req.body;
     if (!room) return res.status(400).json({ error: 'Room ID required' });
 
-    // Get latest sensor data by room ID
-    const sensorData = await Sensor.findOne({ room }).sort({ timestamp: -1 });
     const roomInfo = await Room.findById(room);
+    if (!roomInfo) {
+      return res.status(404).json({ error: 'Room not found' });
+    }
+
+    // Get latest sensor data by room name
+    const sensorData = await Sensor.findOne({ room: roomInfo.name }).sort({ timestamp: -1 });
 
     if (!sensorData) {
       return res.status(404).json({ error: 'No recent sensor data found for this room. Please wait for data to arrive.' });
-    }
-    if (!roomInfo) {
-      return res.status(404).json({ error: 'Room not found' });
     }
 
     // Analyze with AI

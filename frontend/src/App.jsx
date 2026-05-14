@@ -2,6 +2,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { useEffect } from 'react';
 import { useStore } from './store/useStore';
 import { initSocket, disconnectSocket } from './services/socket';
+import { scenarioManager } from './services/scenarioManager';
 import ErrorBoundary from './components/Common/ErrorBoundary';
 
 // Pages
@@ -18,6 +19,7 @@ import SettingsPage from './pages/SettingsPage';
 import Navbar from './components/Layout/Navbar';
 import Footer from './components/Layout/Footer';
 import ChatbotWidget from './components/ChatbotWidget';
+import SimulationControlCenter from './components/SimulationControlCenter';
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
@@ -68,6 +70,11 @@ function App() {
     };
   }, [isAuthenticated]);
 
+  const handleScenarioTrigger = (scenario) => {
+    scenarioManager.triggerScenario(scenario);
+    console.log('Scenario triggered:', scenario.id);
+  };
+
   return (
     <ErrorBoundary>
       <Router>
@@ -91,6 +98,7 @@ function App() {
 
           {isAuthenticated && <Footer />}
           {isAuthenticated && <ChatbotWidget />}
+          {isAuthenticated && <SimulationControlCenter onScenarioTrigger={handleScenarioTrigger} />}
         </div>
       </Router>
     </ErrorBoundary>

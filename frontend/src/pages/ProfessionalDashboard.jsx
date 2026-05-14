@@ -47,6 +47,8 @@ import { useStore } from '../store/useStore';
 import { THEME_COLORS } from '../config/theme';
 import { SensorSimulator, DEFAULT_BUILDING_CONFIG } from '../services/simulationEngine';
 import { AIAnalyticsEngine } from '../services/aiAnalytics';
+import { scenarioManager } from '../services/scenarioManager';
+import HealthScoreGauge from '../components/HealthScoreGauge';
 
 export default function ProfessionalDashboard() {
   const { theme } = useStore();
@@ -82,7 +84,11 @@ export default function ProfessionalDashboard() {
       DEFAULT_BUILDING_CONFIG.buildings.forEach((building) => {
         newData[building.id] = {};
         building.rooms.forEach((room) => {
-          const data = simulators[building.id][room.id].generateSensorData();
+          let data = simulators[building.id][room.id].generateSensorData();
+          
+          // Apply scenario effects if any active
+          data = scenarioManager.applyScenarioEffects(data, room.id);
+          
           newData[building.id][room.id] = data;
 
           // Analyze alerts
@@ -520,9 +526,15 @@ export default function ProfessionalDashboard() {
                           initial={{ opacity: 0, height: 0 }}
                           animate={{ opacity: 1, height: 'auto' }}
                           exit={{ opacity: 0, height: 0 }}
-                          className="mt-4 pt-4 border-t space-y-2"
+                          className="mt-4 pt-4 border-t space-y-4"
                           style={{ borderColor: colors.border.primary }}
                         >
+                          {/* Health Score Gauge */}
+                          <div className="flex justify-center py-2">
+                            <HealthScoreGauge score={health} size={140} />
+                          </div>
+
+                          {/* Detailed Sensors */}
                           <div className="grid grid-cols-2 gap-2 text-sm">
                             <div>
                               <p style={{ color: colors.text.secondary }} className="text-xs">
