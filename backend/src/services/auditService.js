@@ -1,4 +1,4 @@
-const AuditLog = require('../audit/audit.model');
+const AuditLog = require('../modules/audit/audit.model');
 
 /**
  * Audit Logging Service

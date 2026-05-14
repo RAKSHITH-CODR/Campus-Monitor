@@ -3,7 +3,7 @@ import { useStore } from '../store/useStore';
 import { settingsAPI } from '../services/api';
 import {
   Settings as SettingsIcon,
-  Toggle2,
+  ToggleRight,
   Zap,
   AlertCircle,
   CheckCircle2,

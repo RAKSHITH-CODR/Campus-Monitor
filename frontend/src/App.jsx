@@ -6,7 +6,7 @@ import ErrorBoundary from './components/Common/ErrorBoundary';
 
 // Pages
 import LoginPage from './pages/LoginPage';
-import DashboardPage from './pages/DashboardPage';
+import ProfessionalDashboard from './pages/ProfessionalDashboard';
 import AlertsPage from './pages/AlertsPage';
 import AnalyticsPage from './pages/AnalyticsPage';
 import AIAnalysisPage from './pages/AIAnalysisPage';
@@ -71,13 +71,13 @@ function App() {
   return (
     <ErrorBoundary>
       <Router>
-        <div className="min-h-screen flex flex-col bg-white dark:bg-gray-950 transition-colors duration-300">
+        <div className="min-h-screen flex flex-col bg-white dark:bg-slate-950 transition-colors duration-300">
           {isAuthenticated && <Navbar />}
 
           <main className="flex-1">
             <Routes>
               <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
-              <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
+              <Route path="/dashboard" element={<ProtectedRoute><ProfessionalDashboard /></ProtectedRoute>} />
               <Route path="/alerts" element={<ProtectedRoute><AlertsPage /></ProtectedRoute>} />
               <Route path="/analytics" element={<ProtectedRoute><AnalyticsPage /></ProtectedRoute>} />
               <Route path="/ai-analysis" element={<ProtectedRoute><AIAnalysisPage /></ProtectedRoute>} />
