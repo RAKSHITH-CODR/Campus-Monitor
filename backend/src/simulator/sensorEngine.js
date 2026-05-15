@@ -36,8 +36,8 @@ class SensorEngine {
         const sensor = await Sensor.create(sensorData);
         
         // Broadcast via socket
-        const { broadcastSensorData } = require('../services/socketService');
-        broadcastSensorData(sensor.toObject());
+        const { emitSensorUpdate } = require('../services/socketManager');
+        emitSensorUpdate(sensor.toObject());
       } catch (error) {
         console.error('[ERROR] Sensor save error:', error.message);
       }
