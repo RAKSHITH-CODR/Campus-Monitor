@@ -44,7 +44,7 @@ Be concise and practical.
     const analysis = JSON.parse(jsonMatch ? jsonMatch[0] : responseText);
 
     // Store AI log
-    const aiLog = await AILog.create({
+    await AILog.create({
       room: roomInfo.name,
       sensorData,
       reasoning: analysis.reasoning,
@@ -52,9 +52,9 @@ Be concise and practical.
       severity: analysis.severity,
     });
 
-    // Broadcast via socket
-    const { broadcastAIReasoning } = require('./socketService');
-    broadcastAIReasoning({
+    // FIX: use socketManager instead of socketService so the broadcast actually fires
+    const { emitAiReasoning } = require('./socketManager');
+    emitAiReasoning({
       room: roomInfo.name,
       analysis,
       timestamp: new Date(),
@@ -62,7 +62,8 @@ Be concise and practical.
 
     return analysis;
   } catch (error) {
-    console.error('❌ Groq API error:', error.message);
+    // FIX: include room name in error log so you know which room failed
+    console.error(`❌ Groq API error for room "${roomInfo?.name || 'unknown'}":`, error.message);
     return {
       reasoning: 'System error analyzing data',
       severity: 'LOW',
