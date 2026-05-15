@@ -1,7 +1,7 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { useEffect } from 'react';
 import { useStore } from './store/useStore';
-import { initSocket, disconnectSocket } from './services/socket';
+import { connectSocket, disconnectSocket } from './services/socket';
 import { scenarioManager } from './services/scenarioManager';
 import ErrorBoundary from './components/Common/ErrorBoundary';
 
@@ -55,7 +55,7 @@ function App() {
   useEffect(() => {
     if (isAuthenticated) {
       try {
-        initSocket();
+        connectSocket();
       } catch (error) {
         console.error('Failed to initialize Socket.IO:', error);
       }
