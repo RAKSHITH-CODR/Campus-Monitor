@@ -2,7 +2,7 @@ const cron = require('node-cron');
 const Sensor = require('../modules/sensors/sensor.model');
 const { checkThresholds } = require('../services/monitoringService');
 const { createAlert } = require('../services/alertService');
-const { broadcastAlert } = require('../services/socketService');
+const { emitNewAlert } = require('../services/socketManager');
 
 const startMonitoringJob = () => {
   // Run every 5 minutes
@@ -28,7 +28,7 @@ const startMonitoringJob = () => {
               });
               
               // Broadcast alert via socket
-              broadcastAlert(alert.toObject());
+              emitNewAlert(alert.toObject());
             }
           }
         }
