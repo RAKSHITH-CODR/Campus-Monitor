@@ -41,8 +41,8 @@ class AnomalyEngine {
       });
 
       // Broadcast via socket
-      const { broadcastSensorData } = require('../services/socketService');
-      broadcastSensorData(sensor.toObject());
+      const { emitSensorUpdate } = require('../services/socketManager');
+      emitSensorUpdate(sensor.toObject());
     } catch (error) {
       console.error('[ERROR] Anomaly injection error:', error.message);
     }
