@@ -21,6 +21,8 @@ const { setupDashboardSocket } = require('./sockets/dashboard.socket');
 
 const server = http.createServer(app);
 const io = initSocket(server);
+const socketManager = require('./services/socketManager');
+socketManager.initSocket(io);
 
 // Setup socket handlers
 setupSensorSocket(io);
