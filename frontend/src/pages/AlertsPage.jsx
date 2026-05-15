@@ -13,7 +13,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { alertsAPI, roomsAPI } from '../services/api';
-import { onNewAlert, removeListener } from '../services/socket';
+import { onNewAlert } from '../services/socket';
 import {
   CheckCircle2, AlertCircle, Filter, Loader, Clock,
   Thermometer, ChevronLeft, ChevronRight, Download, Bell
@@ -41,16 +41,23 @@ function AlertsPage() {
   const listenerRef = useRef(false);
 
   useEffect(() => {
-    loadAlerts();
-    loadRooms(); // FIX: load rooms for AlertHeatmap
-    if (!listenerRef.current) {
-      listenerRef.current = true;
-      onNewAlert((alert) => {
-        setAlerts(prev => [alert, ...prev]);
-      });
-    }
-    return () => { removeListener('newAlert'); };
-  }, [page]);
+  loadAlerts();
+  loadRooms();
+
+  let cleanup = null;
+
+  if (!listenerRef.current) {
+    listenerRef.current = true;
+
+    cleanup = onNewAlert((alert) => {
+      setAlerts(prev => [alert, ...prev]);
+    });
+  }
+
+  return () => {
+    if (cleanup) cleanup();
+  };
+}, [page]);
 
   async function loadAlerts() {
     try {
