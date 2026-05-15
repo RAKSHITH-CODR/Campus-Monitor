@@ -1,171 +1,183 @@
-import React, { useState, useEffect } from 'react';
+/**
+ * ProfessionalDashboard — FIXED
+ *
+ * Was: using SensorSimulator (frontend fake data) + DEFAULT_BUILDING_CONFIG (hardcoded rooms)
+ * Now: real rooms from /api/rooms, real live sensor data via Socket.IO (useSocket hook),
+ *      real active alerts from /api/alerts/active, real AI logs from socket aiReasoning events.
+ *
+ * The scenarioManager still works — it injects overrides on top of real socket data.
+ * The chart still accumulates datapoints every time a sensorUpdate fires, same visual effect.
+ */
+
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  BarChart,
-  Bar,
-  LineChart,
-  Line,
-  AreaChart,
-  Area,
-  PieChart,
-  Pie,
-  Cell,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
+  BarChart, Bar, LineChart, Line, AreaChart, Area,
+  XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer,
-  RadarChart,
-  PolarGrid,
-  PolarAngleAxis,
-  PolarRadiusAxis,
-  Radar,
-  ScatterChart,
-  Scatter,
 } from 'recharts';
 import {
-  Zap,
-  Cloud,
-  Droplets,
-  Users,
-  AlertTriangle,
-  TrendingUp,
-  Activity,
-  Wind,
-  Thermometer,
-  Heart,
-  MapPin,
-  Clock,
-  Info,
-  ChevronDown,
-  ChevronUp,
-  Eye,
-  EyeOff,
+  Zap, Cloud, Users, AlertTriangle, TrendingUp,
+  Activity, Thermometer, Info, Eye, EyeOff, Brain,
+  Wifi, WifiOff, Loader,
 } from 'lucide-react';
 import { useStore } from '../store/useStore';
 import { THEME_COLORS } from '../config/theme';
-import { SensorSimulator, DEFAULT_BUILDING_CONFIG } from '../services/simulationEngine';
-import { AIAnalyticsEngine } from '../services/aiAnalytics';
+import { roomsAPI, alertsAPI } from '../services/api';
+import useSocket from '../hooks/useSocket';
 import { scenarioManager } from '../services/scenarioManager';
 import HealthScoreGauge from '../components/HealthScoreGauge';
+
+// ── Simple local health score (replaces AIAnalyticsEngine) ───────────────────
+function calcHealthScore(sensor) {
+  if (!sensor) return 0;
+  let score = 100;
+  const temp = sensor.temperature ?? sensor.sensors?.temperature;
+  const aqi  = sensor.airQuality  ?? sensor.sensors?.aqi;
+  const energy = sensor.energyUsage ?? sensor.sensors?.power;
+
+  if (temp !== undefined) {
+    if (temp > 35) score -= 40;
+    else if (temp > 30) score -= 20;
+    else if (temp < 18) score -= 10;
+  }
+  if (aqi !== undefined) {
+    if (aqi > 200) score -= 35;
+    else if (aqi > 100) score -= 15;
+  }
+  if (energy !== undefined) {
+    if (energy > 700) score -= 15;
+    else if (energy > 500) score -= 5;
+  }
+  return Math.max(0, Math.min(100, score));
+}
+
+// ── Classify alert severity from sensor (replaces aiEngine.classifyAlert) ───
+function classifyAlerts(sensor, roomName) {
+  const alerts = [];
+  const temp = sensor.temperature;
+  const aqi  = sensor.airQuality;
+  const energy = sensor.energyUsage;
+
+  if (temp > 35)       alerts.push({ severity: 'CRITICAL', message: `Critical temp ${temp}°C`, room: roomName });
+  else if (temp > 30)  alerts.push({ severity: 'HIGH',     message: `High temp ${temp}°C`,     room: roomName });
+  if (aqi > 200)       alerts.push({ severity: 'CRITICAL', message: `Hazardous AQI ${aqi}`,    room: roomName });
+  else if (aqi > 100)  alerts.push({ severity: 'HIGH',     message: `Poor AQI ${aqi}`,         room: roomName });
+  if (energy > 700)    alerts.push({ severity: 'HIGH',     message: `High energy ${energy}W`,  room: roomName });
+
+  return alerts;
+}
 
 export default function ProfessionalDashboard() {
   const { theme } = useStore();
   const isDark = theme === 'dark';
   const colors = isDark ? THEME_COLORS.dark : THEME_COLORS.light;
 
-  const [sensorData, setSensorData] = useState({});
-  const [alerts, setAlerts] = useState([]);
+  // ── State ──────────────────────────────────────────────────────────────────
+  const [rooms, setRooms] = useState([]);           // from /api/rooms
+  const [roomsLoading, setRoomsLoading] = useState(true);
+  const [activeAlerts, setActiveAlerts] = useState([]);  // from /api/alerts/active
+  const [localAlerts, setLocalAlerts] = useState([]);    // derived from socket sensor data
   const [expandedRoom, setExpandedRoom] = useState(null);
   const [showAIReasoning, setShowAIReasoning] = useState(false);
-  const [aiReasoning, setAiReasoning] = useState([]);
   const [chartData, setChartData] = useState([]);
-  const [selectedBuilding, setSelectedBuilding] = useState('block-a');
-  const [recommendations, setRecommendations] = useState([]);
 
-  const aiEngine = new AIAnalyticsEngine();
+  // ── Socket hook — real-time sensor data ───────────────────────────────────
+  const { sensorData, newAlerts, latestAiLog, isConnected } = useSocket();
 
-  // Initialize simulators
+  // ── Fetch rooms and active alerts on mount ────────────────────────────────
   useEffect(() => {
-    const simulators = {};
-    DEFAULT_BUILDING_CONFIG.buildings.forEach((building) => {
-      simulators[building.id] = {};
-      building.rooms.forEach((room) => {
-        simulators[building.id][room.id] = new SensorSimulator(room.id, room.type);
-      });
-    });
-
-    // Update sensors every 5 seconds
-    const interval = setInterval(() => {
-      const newData = {};
-      const newAlerts = [];
-
-      DEFAULT_BUILDING_CONFIG.buildings.forEach((building) => {
-        newData[building.id] = {};
-        building.rooms.forEach((room) => {
-          let data = simulators[building.id][room.id].generateSensorData();
-          
-          // Apply scenario effects if any active
-          data = scenarioManager.applyScenarioEffects(data, room.id);
-          
-          newData[building.id][room.id] = data;
-
-          // Analyze alerts
-          const roomAlerts = aiEngine.classifyAlert(data);
-          newAlerts.push(...roomAlerts.map((a) => ({ ...a, roomId: room.id, room: room.name })));
-
-          // AI reasoning for first room
-          if (building.id === 'block-a' && room.id === 'a-101') {
-            const reasoning = aiEngine.generateReasoning(room.id, data, roomAlerts);
-            setAiReasoning(reasoning);
-
-            const recs = aiEngine.generateRecommendation(data, roomAlerts);
-            setRecommendations(recs);
-          }
-        });
-      });
-
-      setSensorData(newData);
-      setAlerts(newAlerts.slice(0, 10)); // Keep only latest 10
-
-      // Update chart data
-      setChartData((prev) => {
-        const newChart = [
-          ...prev.slice(-11),
-          {
-            time: new Date().toLocaleTimeString(),
-            occupancy: Object.values(newData)
-              .flatMap((b) => Object.values(b))
-              .reduce((sum, d) => sum + d.sensors.occupancy, 0),
-            temperature: (Object.values(newData)
-              .flatMap((b) => Object.values(b))
-              .reduce((sum, d) => sum + d.sensors.temperature, 0) /
-              (Object.values(newData).flatMap((b) => Object.values(b)).length || 1)).toFixed(1),
-            power: Object.values(newData)
-              .flatMap((b) => Object.values(b))
-              .reduce((sum, d) => sum + d.sensors.power, 0),
-            aqi: (Object.values(newData)
-              .flatMap((b) => Object.values(b))
-              .reduce((sum, d) => sum + d.sensors.aqi, 0) /
-              (Object.values(newData).flatMap((b) => Object.values(b)).length || 1)).toFixed(0),
-          },
-        ];
-        return newChart;
-      });
-    }, 5000);
-
-    return () => clearInterval(interval);
+    async function load() {
+      try {
+        setRoomsLoading(true);
+        const [roomsRes, alertsRes] = await Promise.all([
+          roomsAPI.getAll(1, 100),
+          alertsAPI.getActive(1, 20),
+        ]);
+        setRooms(roomsRes.data || roomsRes.rooms || []);
+        setActiveAlerts(alertsRes.data || alertsRes.alerts || []);
+      } catch (err) {
+        console.error('[Dashboard] Load error:', err.message);
+      } finally {
+        setRoomsLoading(false);
+      }
+    }
+    load();
   }, []);
 
-  const currentBuildingData = sensorData[selectedBuilding] || {};
-  const rooms = DEFAULT_BUILDING_CONFIG.buildings.find(
-    (b) => b.id === selectedBuilding
-  )?.rooms || [];
+  // ── Merge new socket alerts into activeAlerts ─────────────────────────────
+  useEffect(() => {
+    if (newAlerts.length > 0) {
+      setActiveAlerts(prev => {
+        const ids = new Set(prev.map(a => a._id));
+        const fresh = newAlerts.filter(a => !ids.has(a._id));
+        return [...fresh, ...prev].slice(0, 20);
+      });
+    }
+  }, [newAlerts]);
 
-  // Calculate metrics
-  const totalOccupancy = Object.values(currentBuildingData)
-    .reduce((sum, d) => sum + (d?.sensors?.occupancy || 0), 0);
-  const avgTemp = (Object.values(currentBuildingData)
-    .reduce((sum, d) => sum + (d?.sensors?.temperature || 0), 0) /
-    Math.max(Object.values(currentBuildingData).length, 1)).toFixed(1);
-  const avgAQI = (Object.values(currentBuildingData)
-    .reduce((sum, d) => sum + (d?.sensors?.aqi || 0), 0) /
-    Math.max(Object.values(currentBuildingData).length, 1)).toFixed(0);
-  const totalPower = Object.values(currentBuildingData)
-    .reduce((sum, d) => sum + (d?.sensors?.power || 0), 0);
+  // ── Derive local alerts from live sensor data ─────────────────────────────
+  useEffect(() => {
+    const derived = [];
+    Object.entries(sensorData).forEach(([roomName, sensor]) => {
+      // Apply scenario overrides if any active
+      const effective = scenarioManager.applyScenarioEffects({ ...sensor }, roomName);
+      derived.push(...classifyAlerts(effective, roomName));
+    });
+    setLocalAlerts(derived.slice(0, 10));
+  }, [sensorData]);
 
-  const healthScore = currentBuildingData[rooms[0]?.id]
-    ? aiEngine.calculateHealthScore(currentBuildingData[rooms[0]?.id])
-    : 0;
+  // ── Build chart datapoints from socket updates ────────────────────────────
+  useEffect(() => {
+    if (Object.keys(sensorData).length === 0) return;
+
+    const allSensors = Object.values(sensorData);
+    const avgTemp = (allSensors.reduce((s, d) => s + (d.temperature || 0), 0) / allSensors.length).toFixed(1);
+    const avgAQI  = (allSensors.reduce((s, d) => s + (d.airQuality || 0), 0) / allSensors.length).toFixed(0);
+    const totalEnergy = allSensors.reduce((s, d) => s + (d.energyUsage || 0), 0);
+    const occupiedRooms = allSensors.filter(d => d.motion).length;
+
+    setChartData(prev => [
+      ...prev.slice(-11),
+      {
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        occupancy: occupiedRooms,
+        temperature: parseFloat(avgTemp),
+        power: Math.round(totalEnergy),
+        aqi: parseInt(avgAQI),
+      },
+    ]);
+  }, [sensorData]);
+
+  // ── Derived metrics ───────────────────────────────────────────────────────
+  const allSensors = Object.values(sensorData);
+  const avgTemp    = allSensors.length
+    ? (allSensors.reduce((s, d) => s + (d.temperature || 0), 0) / allSensors.length).toFixed(1)
+    : '—';
+  const avgAQI     = allSensors.length
+    ? (allSensors.reduce((s, d) => s + (d.airQuality || 0), 0) / allSensors.length).toFixed(0)
+    : '—';
+  const totalPowerKW = allSensors.length
+    ? (allSensors.reduce((s, d) => s + (d.energyUsage || 0), 0) / 1000).toFixed(1)
+    : '—';
+  const occupiedRooms = allSensors.filter(d => d.motion).length;
+
+  const allAlerts = [...activeAlerts, ...localAlerts];
+
+  // AI reasoning lines from latest socket event
+  const aiLines = latestAiLog
+    ? [
+        `📍 Room: ${latestAiLog.room}`,
+        `🧠 ${latestAiLog.analysis?.reasoning || latestAiLog.reasoning || ''}`,
+        `⚡ Action: ${latestAiLog.analysis?.actionTaken || latestAiLog.actionTaken || ''}`,
+        `🔖 Severity: ${latestAiLog.analysis?.severity || latestAiLog.severity || ''}`,
+      ]
+    : [];
 
   return (
     <div
       className="min-h-screen transition-colors duration-300"
-      style={{
-        backgroundColor: colors.bg.primary,
-        color: colors.text.primary,
-      }}
+      style={{ backgroundColor: colors.bg.primary, color: colors.text.primary }}
     >
       {/* Header */}
       <motion.div
@@ -178,85 +190,55 @@ export default function ProfessionalDashboard() {
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
               <h1 className="text-4xl font-bold">Campus Monitor</h1>
-              <p style={{ color: colors.text.secondary }} className="text-sm">
+              <p style={{ color: colors.text.secondary }} className="text-sm mt-1">
                 Real-time Intelligent Monitoring System
               </p>
             </div>
 
-            {/* Building Selector */}
-            <div className="flex gap-2">
-              {DEFAULT_BUILDING_CONFIG.buildings.map((building) => (
-                <motion.button
-                  key={building.id}
-                  onClick={() => setSelectedBuilding(building.id)}
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
-                  className="px-4 py-2 rounded-lg font-medium transition-all"
-                  style={{
-                    backgroundColor:
-                      selectedBuilding === building.id
-                        ? '#3B82F6'
-                        : colors.bg.secondary,
-                    color:
-                      selectedBuilding === building.id
-                        ? '#FFFFFF'
-                        : colors.text.primary,
-                    border: `1px solid ${colors.border.primary}`,
-                  }}
-                >
-                  {building.name}
-                </motion.button>
-              ))}
+            {/* Live connection badge */}
+            <div className={`flex items-center gap-2 px-4 py-2 rounded-xl border text-sm font-medium ${
+              isDark
+                ? isConnected ? 'bg-emerald-900/30 border-emerald-700 text-emerald-300' : 'bg-red-900/30 border-red-700 text-red-300'
+                : isConnected ? 'bg-emerald-50 border-emerald-300 text-emerald-700' : 'bg-red-50 border-red-300 text-red-700'
+            }`}>
+              {isConnected
+                ? <><Wifi className="w-4 h-4" /><motion.span animate={{ opacity: [1, 0.4, 1] }} transition={{ duration: 1.5, repeat: Infinity }}>Live</motion.span></>
+                : <><WifiOff className="w-4 h-4" /> Reconnecting...</>
+              }
             </div>
           </div>
         </div>
       </motion.div>
 
-      {/* Main Content */}
       <div className="mx-auto max-w-7xl p-6 space-y-6">
+
         {/* Hero Metrics */}
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ staggerChildren: 0.1 }}
           className="grid gap-4 md:grid-cols-2 lg:grid-cols-4"
         >
           {[
-            { icon: Users, label: 'Occupancy', value: totalOccupancy, unit: 'people' },
-            {
-              icon: Thermometer,
-              label: 'Avg Temp',
-              value: avgTemp,
-              unit: '°C',
-            },
-            { icon: Cloud, label: 'Air Quality', value: avgAQI, unit: 'AQI' },
-            { icon: Zap, label: 'Power Usage', value: (totalPower / 1000).toFixed(1), unit: 'kW' },
+            { icon: Users,       label: 'Occupied Rooms', value: occupiedRooms, unit: `of ${rooms.length}` },
+            { icon: Thermometer, label: 'Avg Temperature', value: avgTemp,       unit: '°C' },
+            { icon: Cloud,       label: 'Avg Air Quality', value: avgAQI,        unit: 'AQI' },
+            { icon: Zap,         label: 'Total Power',     value: totalPowerKW,  unit: 'kW' },
           ].map((metric, idx) => (
             <motion.div
               key={idx}
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: idx * 0.1 }}
+              transition={{ delay: idx * 0.08 }}
               className="p-6 rounded-xl border transition-all hover:shadow-lg"
-              style={{
-                backgroundColor: colors.card,
-                borderColor: colors.border.primary,
-              }}
+              style={{ backgroundColor: colors.card, borderColor: colors.border.primary }}
             >
               <div className="flex items-start justify-between">
                 <div>
-                  <p style={{ color: colors.text.secondary }} className="text-sm font-medium">
-                    {metric.label}
-                  </p>
+                  <p style={{ color: colors.text.secondary }} className="text-sm font-medium">{metric.label}</p>
                   <p className="mt-2 text-3xl font-bold">{metric.value}</p>
-                  <p style={{ color: colors.text.tertiary }} className="text-xs mt-1">
-                    {metric.unit}
-                  </p>
+                  <p style={{ color: colors.text.tertiary }} className="text-xs mt-1">{metric.unit}</p>
                 </div>
-                <div
-                  className="p-3 rounded-lg"
-                  style={{ backgroundColor: colors.bg.secondary }}
-                >
+                <div className="p-3 rounded-lg" style={{ backgroundColor: colors.bg.secondary }}>
                   <metric.icon className="w-6 h-6" style={{ color: '#3B82F6' }} />
                 </div>
               </div>
@@ -264,310 +246,228 @@ export default function ProfessionalDashboard() {
           ))}
         </motion.div>
 
-        {/* Charts Section */}
+        {/* Charts */}
         <div className="grid gap-6 lg:grid-cols-2">
-          {/* Line Chart - Trends */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
+          {/* Temperature trend */}
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
             className="p-6 rounded-xl border"
-            style={{
-              backgroundColor: colors.card,
-              borderColor: colors.border.primary,
-            }}
+            style={{ backgroundColor: colors.card, borderColor: colors.border.primary }}
           >
             <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <TrendingUp className="w-5 h-5" />
-              Occupancy Trends
+              <Thermometer className="w-5 h-5" /> Temperature Trend
             </h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <AreaChart data={chartData}>
-                <defs>
-                  <linearGradient id="colorOccupancy" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#3B82F6" stopOpacity={0.8} />
-                    <stop offset="95%" stopColor="#3B82F6" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke={colors.border.primary}
-                />
-                <XAxis
-                  dataKey="time"
-                  stroke={colors.text.secondary}
-                  style={{ fontSize: '12px' }}
-                />
-                <YAxis stroke={colors.text.secondary} style={{ fontSize: '12px' }} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: colors.bg.secondary,
-                    border: `1px solid ${colors.border.primary}`,
-                  }}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="occupancy"
-                  stroke="#3B82F6"
-                  fillOpacity={1}
-                  fill="url(#colorOccupancy)"
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+            {chartData.length === 0
+              ? <div className="h-[300px] flex items-center justify-center text-sm" style={{ color: colors.text.secondary }}>
+                  <Loader className="w-5 h-5 animate-spin mr-2" /> Waiting for live data...
+                </div>
+              : <ResponsiveContainer width="100%" height={300}>
+                  <LineChart data={chartData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={colors.border.primary} />
+                    <XAxis dataKey="time" stroke={colors.text.secondary} style={{ fontSize: 11 }} />
+                    <YAxis stroke={colors.text.secondary} style={{ fontSize: 11 }} />
+                    <Tooltip contentStyle={{ backgroundColor: colors.bg.secondary, border: `1px solid ${colors.border.primary}` }} />
+                    <Line type="monotone" dataKey="temperature" stroke="#F59E0B" strokeWidth={2} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+            }
           </motion.div>
 
-          {/* Temperature Chart */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
+          {/* AQI trend */}
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
             className="p-6 rounded-xl border"
-            style={{
-              backgroundColor: colors.card,
-              borderColor: colors.border.primary,
-            }}
+            style={{ backgroundColor: colors.card, borderColor: colors.border.primary }}
           >
             <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Thermometer className="w-5 h-5" />
-              Temperature Trends
+              <Cloud className="w-5 h-5" /> Air Quality Trend
             </h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={chartData}>
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke={colors.border.primary}
-                />
-                <XAxis
-                  dataKey="time"
-                  stroke={colors.text.secondary}
-                  style={{ fontSize: '12px' }}
-                />
-                <YAxis stroke={colors.text.secondary} style={{ fontSize: '12px' }} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: colors.bg.secondary,
-                    border: `1px solid ${colors.border.primary}`,
-                  }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="temperature"
-                  stroke="#F59E0B"
-                  strokeWidth={2}
-                  dot={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+            {chartData.length === 0
+              ? <div className="h-[300px] flex items-center justify-center text-sm" style={{ color: colors.text.secondary }}>
+                  <Loader className="w-5 h-5 animate-spin mr-2" /> Waiting for live data...
+                </div>
+              : <ResponsiveContainer width="100%" height={300}>
+                  <AreaChart data={chartData}>
+                    <defs>
+                      <linearGradient id="aqiGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%"  stopColor="#10B981" stopOpacity={0.6} />
+                        <stop offset="95%" stopColor="#10B981" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke={colors.border.primary} />
+                    <XAxis dataKey="time" stroke={colors.text.secondary} style={{ fontSize: 11 }} />
+                    <YAxis stroke={colors.text.secondary} style={{ fontSize: 11 }} />
+                    <Tooltip contentStyle={{ backgroundColor: colors.bg.secondary, border: `1px solid ${colors.border.primary}` }} />
+                    <Area type="monotone" dataKey="aqi" stroke="#10B981" fill="url(#aqiGrad)" />
+                  </AreaChart>
+                </ResponsiveContainer>
+            }
+          </motion.div>
+
+          {/* Power trend */}
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+            className="p-6 rounded-xl border"
+            style={{ backgroundColor: colors.card, borderColor: colors.border.primary }}
+          >
+            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+              <Zap className="w-5 h-5" /> Power Consumption
+            </h3>
+            {chartData.length === 0
+              ? <div className="h-[300px] flex items-center justify-center text-sm" style={{ color: colors.text.secondary }}>
+                  <Loader className="w-5 h-5 animate-spin mr-2" /> Waiting for live data...
+                </div>
+              : <ResponsiveContainer width="100%" height={300}>
+                  <BarChart data={chartData}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={colors.border.primary} />
+                    <XAxis dataKey="time" stroke={colors.text.secondary} style={{ fontSize: 11 }} />
+                    <YAxis stroke={colors.text.secondary} style={{ fontSize: 11 }} />
+                    <Tooltip contentStyle={{ backgroundColor: colors.bg.secondary, border: `1px solid ${colors.border.primary}` }} />
+                    <Bar dataKey="power" fill="#EF4444" radius={[6, 6, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+            }
+          </motion.div>
+
+          {/* Occupancy trend */}
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+            className="p-6 rounded-xl border"
+            style={{ backgroundColor: colors.card, borderColor: colors.border.primary }}
+          >
+            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+              <TrendingUp className="w-5 h-5" /> Occupied Rooms
+            </h3>
+            {chartData.length === 0
+              ? <div className="h-[300px] flex items-center justify-center text-sm" style={{ color: colors.text.secondary }}>
+                  <Loader className="w-5 h-5 animate-spin mr-2" /> Waiting for live data...
+                </div>
+              : <ResponsiveContainer width="100%" height={300}>
+                  <AreaChart data={chartData}>
+                    <defs>
+                      <linearGradient id="occGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%"  stopColor="#3B82F6" stopOpacity={0.7} />
+                        <stop offset="95%" stopColor="#3B82F6" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke={colors.border.primary} />
+                    <XAxis dataKey="time" stroke={colors.text.secondary} style={{ fontSize: 11 }} />
+                    <YAxis stroke={colors.text.secondary} style={{ fontSize: 11 }} />
+                    <Tooltip contentStyle={{ backgroundColor: colors.bg.secondary, border: `1px solid ${colors.border.primary}` }} />
+                    <Area type="monotone" dataKey="occupancy" stroke="#3B82F6" fill="url(#occGrad)" />
+                  </AreaChart>
+                </ResponsiveContainer>
+            }
           </motion.div>
         </div>
 
-        {/* Power & AQI */}
-        <div className="grid gap-6 lg:grid-cols-2">
-          {/* Power Consumption */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="p-6 rounded-xl border"
-            style={{
-              backgroundColor: colors.card,
-              borderColor: colors.border.primary,
-            }}
-          >
-            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Zap className="w-5 h-5" />
-              Power Consumption
-            </h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={chartData}>
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke={colors.border.primary}
-                />
-                <XAxis
-                  dataKey="time"
-                  stroke={colors.text.secondary}
-                  style={{ fontSize: '12px' }}
-                />
-                <YAxis stroke={colors.text.secondary} style={{ fontSize: '12px' }} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: colors.bg.secondary,
-                    border: `1px solid ${colors.border.primary}`,
-                  }}
-                />
-                <Bar dataKey="power" fill="#EF4444" radius={[8, 8, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </motion.div>
-
-          {/* Air Quality */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="p-6 rounded-xl border"
-            style={{
-              backgroundColor: colors.card,
-              borderColor: colors.border.primary,
-            }}
-          >
-            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Cloud className="w-5 h-5" />
-              Air Quality Index
-            </h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={chartData}>
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke={colors.border.primary}
-                />
-                <XAxis
-                  dataKey="time"
-                  stroke={colors.text.secondary}
-                  style={{ fontSize: '12px' }}
-                />
-                <YAxis stroke={colors.text.secondary} style={{ fontSize: '12px' }} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: colors.bg.secondary,
-                    border: `1px solid ${colors.border.primary}`,
-                  }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="aqi"
-                  stroke="#10B981"
-                  strokeWidth={2}
-                  dot={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </motion.div>
-        </div>
-
-        {/* Live Sensor Grid & AI Insights */}
+        {/* Live Room Grid + AI Insights */}
         <div className="grid gap-6 lg:grid-cols-3">
-          {/* Sensor Grid */}
+
+          {/* Room Cards */}
           <div className="lg:col-span-2 space-y-4">
             <h2 className="text-xl font-bold flex items-center gap-2">
-              <Activity className="w-6 h-6" />
-              Live Room Monitoring
+              <Activity className="w-6 h-6" /> Live Room Monitoring
             </h2>
 
-            <div className="grid gap-3 md:grid-cols-2">
-              {rooms.map((room) => {
-                const roomData = currentBuildingData[room.id];
-                if (!roomData) return null;
+            {roomsLoading ? (
+              <div className="flex items-center gap-2 text-sm" style={{ color: colors.text.secondary }}>
+                <Loader className="w-4 h-4 animate-spin" /> Loading rooms...
+              </div>
+            ) : rooms.length === 0 ? (
+              <p className="text-sm" style={{ color: colors.text.secondary }}>No rooms found.</p>
+            ) : (
+              <div className="grid gap-3 md:grid-cols-2">
+                {rooms.map((room) => {
+                  // Get live sensor data for this room from socket
+                  let sensor = sensorData[room.name] || null;
 
-                const { sensors } = roomData;
-                const health = aiEngine.calculateHealthScore(roomData);
-                const isExpanded = expandedRoom === room.id;
+                  // Apply scenario overrides if active
+                  if (sensor) {
+                    sensor = scenarioManager.applyScenarioEffects({ ...sensor }, room.name);
+                  }
 
-                return (
-                  <motion.div
-                    key={room.id}
-                    layoutId={room.id}
-                    onClick={() => setExpandedRoom(isExpanded ? null : room.id)}
-                    className="p-4 rounded-lg border cursor-pointer transition-all hover:shadow-lg"
-                    style={{
-                      backgroundColor: colors.card,
-                      borderColor:
-                        health > 80
-                          ? '#10B981'
-                          : health > 50
-                            ? '#F59E0B'
-                            : '#EF4444',
-                    }}
-                  >
-                    <div className="flex items-center justify-between mb-3">
-                      <div>
-                        <h4 className="font-semibold">{room.name}</h4>
-                        <p style={{ color: colors.text.secondary }} className="text-xs">
-                          {room.type}
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-2xl font-bold">{health}</div>
-                        <p style={{ color: colors.text.secondary }} className="text-xs">
-                          Health
-                        </p>
-                      </div>
-                    </div>
+                  const health = calcHealthScore(sensor);
+                  const isExpanded = expandedRoom === room._id;
+                  const hasData = !!sensor;
 
-                    {/* Quick Stats */}
-                    <div className="grid grid-cols-2 gap-2 text-sm">
-                      <div>
-                        <p style={{ color: colors.text.secondary }} className="text-xs">
-                          Occupancy
-                        </p>
-                        <p className="font-semibold">{sensors.occupancy}</p>
-                      </div>
-                      <div>
-                        <p style={{ color: colors.text.secondary }} className="text-xs">
-                          Temp
-                        </p>
-                        <p className="font-semibold">{sensors.temperature}°C</p>
-                      </div>
-                      <div>
-                        <p style={{ color: colors.text.secondary }} className="text-xs">
-                          AQI
-                        </p>
-                        <p className="font-semibold">{sensors.aqi}</p>
-                      </div>
-                      <div>
-                        <p style={{ color: colors.text.secondary }} className="text-xs">
-                          Power
-                        </p>
-                        <p className="font-semibold">{(sensors.power / 1000).toFixed(1)}kW</p>
-                      </div>
-                    </div>
+                  const borderColor = health > 80 ? '#10B981' : health > 50 ? '#F59E0B' : '#EF4444';
 
-                    {/* Expanded view */}
-                    <AnimatePresence>
-                      {isExpanded && (
-                        <motion.div
-                          initial={{ opacity: 0, height: 0 }}
-                          animate={{ opacity: 1, height: 'auto' }}
-                          exit={{ opacity: 0, height: 0 }}
-                          className="mt-4 pt-4 border-t space-y-4"
-                          style={{ borderColor: colors.border.primary }}
-                        >
-                          {/* Health Score Gauge */}
-                          <div className="flex justify-center py-2">
-                            <HealthScoreGauge score={health} size={140} />
-                          </div>
+                  return (
+                    <motion.div
+                      key={room._id}
+                      layoutId={room._id}
+                      onClick={() => setExpandedRoom(isExpanded ? null : room._id)}
+                      className="p-4 rounded-lg border cursor-pointer transition-all hover:shadow-lg"
+                      style={{ backgroundColor: colors.card, borderColor: hasData ? borderColor : colors.border.primary }}
+                    >
+                      <div className="flex items-center justify-between mb-3">
+                        <div>
+                          <h4 className="font-semibold">{room.name}</h4>
+                          <p style={{ color: colors.text.secondary }} className="text-xs capitalize">{room.type}</p>
+                        </div>
+                        <div className="text-right">
+                          {hasData
+                            ? <><div className="text-2xl font-bold">{health}</div>
+                                <p style={{ color: colors.text.secondary }} className="text-xs">Health</p></>
+                            : <Loader className="w-5 h-5 animate-spin text-gray-400" />
+                          }
+                        </div>
+                      </div>
 
-                          {/* Detailed Sensors */}
-                          <div className="grid grid-cols-2 gap-2 text-sm">
-                            <div>
-                              <p style={{ color: colors.text.secondary }} className="text-xs">
-                                Humidity
-                              </p>
-                              <p>{sensors.humidity}%</p>
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <div>
+                          <p style={{ color: colors.text.secondary }} className="text-xs">Motion</p>
+                          <p className="font-semibold">{hasData ? (sensor.motion ? 'Yes' : 'No') : '—'}</p>
+                        </div>
+                        <div>
+                          <p style={{ color: colors.text.secondary }} className="text-xs">Temp</p>
+                          <p className="font-semibold">{hasData ? `${sensor.temperature}°C` : '—'}</p>
+                        </div>
+                        <div>
+                          <p style={{ color: colors.text.secondary }} className="text-xs">AQI</p>
+                          <p className="font-semibold">{hasData ? sensor.airQuality : '—'}</p>
+                        </div>
+                        <div>
+                          <p style={{ color: colors.text.secondary }} className="text-xs">Energy</p>
+                          <p className="font-semibold">{hasData ? `${sensor.energyUsage}W` : '—'}</p>
+                        </div>
+                      </div>
+
+                      <AnimatePresence>
+                        {isExpanded && hasData && (
+                          <motion.div
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: 'auto' }}
+                            exit={{ opacity: 0, height: 0 }}
+                            className="mt-4 pt-4 border-t"
+                            style={{ borderColor: colors.border.primary }}
+                          >
+                            <div className="flex justify-center py-2">
+                              <HealthScoreGauge score={health} size={140} />
                             </div>
-                            <div>
-                              <p style={{ color: colors.text.secondary }} className="text-xs">
-                                CO2
-                              </p>
-                              <p>{sensors.co2} ppm</p>
+                            <div className="grid grid-cols-2 gap-2 text-sm mt-3">
+                              <div>
+                                <p style={{ color: colors.text.secondary }} className="text-xs">Floor</p>
+                                <p>{room.floor || '—'}</p>
+                              </div>
+                              <div>
+                                <p style={{ color: colors.text.secondary }} className="text-xs">Capacity</p>
+                                <p>{room.capacity || '—'}</p>
+                              </div>
+                              <div>
+                                <p style={{ color: colors.text.secondary }} className="text-xs">Normal Temp</p>
+                                <p>{room.normalTemperature || '—'}°C</p>
+                              </div>
+                              <div>
+                                <p style={{ color: colors.text.secondary }} className="text-xs">Status</p>
+                                <p className="capitalize">{room.status || 'active'}</p>
+                              </div>
                             </div>
-                            <div>
-                              <p style={{ color: colors.text.secondary }} className="text-xs">
-                                Noise
-                              </p>
-                              <p>{sensors.noise} dB</p>
-                            </div>
-                            <div>
-                              <p style={{ color: colors.text.secondary }} className="text-xs">
-                                Voltage
-                              </p>
-                              <p>{sensors.voltage}V</p>
-                            </div>
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </motion.div>
-                );
-              })}
-            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </motion.div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* AI Insights Panel */}
@@ -575,15 +475,11 @@ export default function ProfessionalDashboard() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             className="p-6 rounded-xl border flex flex-col"
-            style={{
-              backgroundColor: colors.card,
-              borderColor: colors.border.primary,
-            }}
+            style={{ backgroundColor: colors.card, borderColor: colors.border.primary }}
           >
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold flex items-center gap-2">
-                <Brain className="w-5 h-5" />
-                AI Insights
+                <Brain className="w-5 h-5" /> AI Insights
               </h3>
               <motion.button
                 onClick={() => setShowAIReasoning(!showAIReasoning)}
@@ -594,41 +490,56 @@ export default function ProfessionalDashboard() {
             </div>
 
             <div className="flex-1 space-y-3 overflow-y-auto">
-              {showAIReasoning && aiReasoning.length > 0 ? (
-                <div
-                  className="p-3 rounded-lg text-xs font-mono space-y-1"
-                  style={{
-                    backgroundColor: colors.bg.secondary,
-                  }}
-                >
-                  {aiReasoning.map((line, idx) => (
-                    <div key={idx}>
-                      {line.startsWith('⚠️') ? (
-                        <span style={{ color: '#FBBF24' }}>{line}</span>
-                      ) : line.startsWith('✅') ? (
-                        <span style={{ color: '#10B981' }}>{line}</span>
-                      ) : (
-                        <span style={{ color: colors.text.secondary }}>{line}</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
+              {showAIReasoning ? (
+                aiLines.length > 0 ? (
+                  <div
+                    className="p-3 rounded-lg text-xs font-mono space-y-1.5"
+                    style={{ backgroundColor: colors.bg.secondary }}
+                  >
+                    {aiLines.map((line, idx) => (
+                      <div key={idx}>
+                        {line.startsWith('⚠️') || line.startsWith('🔖') ? (
+                          <span style={{ color: '#FBBF24' }}>{line}</span>
+                        ) : line.startsWith('✅') ? (
+                          <span style={{ color: '#10B981' }}>{line}</span>
+                        ) : (
+                          <span style={{ color: colors.text.secondary }}>{line}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div
+                    className="p-4 rounded-lg text-sm text-center"
+                    style={{ backgroundColor: colors.bg.secondary, color: colors.text.secondary }}
+                  >
+                    No AI analysis yet. Go to the AI Analysis page and run diagnostics on a room.
+                  </div>
+                )
               ) : (
                 <div style={{ color: colors.text.secondary }} className="text-sm space-y-2">
                   <div className="flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                    <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0 text-orange-500" />
                     <div>
                       <p className="font-semibold">Active Alerts</p>
-                      <p>{alerts.length} alerts</p>
+                      <p>{allAlerts.length} alerts</p>
                     </div>
                   </div>
                   <div className="border-t pt-2" style={{ borderColor: colors.border.primary }}>
-                    {alerts.slice(0, 3).map((alert, idx) => (
-                      <div key={idx} className="py-2">
-                        <p className="font-semibold text-xs uppercase">{alert.severity}</p>
-                        <p>{alert.message}</p>
+                    {allAlerts.slice(0, 5).map((alert, idx) => (
+                      <div key={idx} className="py-2 border-b last:border-0" style={{ borderColor: colors.border.primary }}>
+                        <p className={`font-semibold text-xs uppercase ${
+                          alert.severity === 'CRITICAL' ? 'text-red-500' :
+                          alert.severity === 'HIGH' ? 'text-orange-500' :
+                          alert.severity === 'MEDIUM' ? 'text-yellow-500' : 'text-blue-500'
+                        }`}>{alert.severity}</p>
+                        <p className="text-xs mt-0.5">{alert.message}</p>
+                        {alert.room && <p className="text-xs opacity-60">{alert.room}</p>}
                       </div>
                     ))}
+                    {allAlerts.length === 0 && (
+                      <p className="text-xs py-2 opacity-60">✨ No active alerts</p>
+                    )}
                   </div>
                 </div>
               )}
@@ -636,69 +547,7 @@ export default function ProfessionalDashboard() {
           </motion.div>
         </div>
 
-        {/* Recommendations */}
-        {recommendations.length > 0 && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="p-6 rounded-xl border"
-            style={{
-              backgroundColor: colors.card,
-              borderColor: colors.border.primary,
-            }}
-          >
-            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-              <Info className="w-5 h-5" />
-              AI Recommendations
-            </h3>
-            <div className="grid gap-3 md:grid-cols-2">
-              {recommendations.map((rec, idx) => (
-                <div
-                  key={idx}
-                  className="p-4 rounded-lg"
-                  style={{
-                    backgroundColor: colors.bg.secondary,
-                  }}
-                >
-                  <div className="flex items-start gap-2">
-                    <div
-                      className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0"
-                      style={{
-                        backgroundColor:
-                          rec.priority === 'HIGH'
-                            ? '#EF4444'
-                            : rec.priority === 'MEDIUM'
-                              ? '#FBBF24'
-                              : '#10B981',
-                      }}
-                    />
-                    <div className="flex-1">
-                      <p className="font-semibold">{rec.action}</p>
-                      <p style={{ color: colors.text.secondary }} className="text-sm">
-                        {rec.reason}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </motion.div>
-        )}
       </div>
     </div>
-  );
-}
-
-// Brain icon component
-function Brain(props) {
-  return (
-    <svg
-      {...props}
-      fill="currentColor"
-      viewBox="0 0 24 24"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm3-8c0 1.66-1.34 3-3 3s-3-1.34-3-3 1.34-3 3-3 3 1.34 3 3z" />
-    </svg>
   );
 }
